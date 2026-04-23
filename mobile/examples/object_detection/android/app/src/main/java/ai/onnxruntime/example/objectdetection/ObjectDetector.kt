@@ -18,10 +18,7 @@ internal data class Result(
 internal class ObjectDetector(
 ) {
 
-    fun detect(inputStream: InputStream, ortEnv: OrtEnvironment, ortSession: OrtSession): Result {
-        // Step 1: convert image into byte array (raw image bytes)
-        val rawImageBytes = inputStream.readBytes()
-
+    fun detect(rawImageBytes: ByteArray, ortEnv: OrtEnvironment, ortSession: OrtSession): Result {
         // Step 2: get the shape of the byte array and make ort tensor
         val shape = longArrayOf(rawImageBytes.size.toLong())
 
@@ -48,6 +45,10 @@ internal class ObjectDetector(
                 return result
             }
         }
+    }
+
+    fun detect(inputStream: InputStream, ortEnv: OrtEnvironment, ortSession: OrtSession): Result {
+        return detect(inputStream.readBytes(), ortEnv, ortSession)
     }
 
     private fun byteArrayToBitmap(data: ByteArray): Bitmap {

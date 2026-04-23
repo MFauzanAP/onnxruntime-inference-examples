@@ -32,7 +32,7 @@ Clone this repository to get the sample application. Then open the project under
 
   Then select `Run -> Run app` and this will prompt the app to be built and installed on your device or emulator.
 
-  Now you can try and test the object detection Android app by clicking the perform action button. Try to click the button multiple times to see the different results.
+  Now you can try and test the object detection Android app by pointing your camera at objects. The detections will run live and show bounding boxes on the screen.
 
 #
 Here are some sample example screenshots of the app.
