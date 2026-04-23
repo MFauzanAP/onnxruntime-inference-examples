@@ -53,4 +53,7 @@ dependencies {
     implementation "androidx.camera:camera-camera2:${camerax_version}"
     implementation "androidx.camera:camera-lifecycle:${camerax_version}"
     implementation "androidx.camera:camera-view:${camerax_version}"
+
+    // MediaPipe for Landmarks (Replicating Python's mp.solutions.face_mesh)
+    implementation 'com.google.mediapipe:tasks-vision:0.10.0'
 }
