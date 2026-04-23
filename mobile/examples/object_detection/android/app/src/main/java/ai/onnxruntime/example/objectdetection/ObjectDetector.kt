@@ -70,17 +70,45 @@ internal class ObjectDetector(
             output.use {
                 val CONF_THRESHOLD = 0.3f
 
-                // YuNet Face Detection
+                // 1. Check if this is a raw YOLOv8 model (1 output, shape [1, 84, 8400] or similar)
                 if (ortSession.outputInfo.size == 1 && !outputNames.contains("image_out")) {
-                    val rawOutput = output.get(0).value as Array<Array<FloatArray>>
-                    val faces = rawOutput[0]
-                    val filteredBoxes = faces.filter { it[14] >= CONF_THRESHOLD }.map { face ->
-                        floatArrayOf(face[0], face[1], face[0] + face[2], face[1] + face[3], face[14], 0f)
-                    }.toTypedArray()
-                    return Result(Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888), filteredBoxes, mWidth, mHeight)
+                    val rawOutput = output.get(0).value
+                    if (rawOutput is Array<*>) {
+                        val tensorData = rawOutput[0] as Array<FloatArray> // [84][8400]
+                        val boxes = mutableListOf<FloatArray>()
+                        
+                        val numFeatures = tensorData.size
+                        val numAnchors = tensorData[0].size
+                        
+                        for (i in 0 until numAnchors) {
+                            // Find max score among classes
+                            var maxScore = 0f
+                            var classId = 0
+                            for (c in 4 until numFeatures) {
+                                if (tensorData[c][i] > maxScore) {
+                                    maxScore = tensorData[c][i]
+                                    classId = c - 4
+                                }
+                            }
+                            
+                            if (maxScore >= CONF_THRESHOLD) {
+                                val cx = tensorData[0][i]
+                                val cy = tensorData[1][i]
+                                val w = tensorData[2][i]
+                                val h = tensorData[3][i]
+                                
+                                // Convert [cx, cy, w, h] to [x1, y1, x2, y2, score, class]
+                                boxes.add(floatArrayOf(
+                                    cx - w/2, cy - h/2, cx + w/2, cy + h/2, maxScore, classId.toFloat()
+                                ))
+                            }
+                        }
+                        // Simple NMS would be good here, but for now just returning filtered boxes
+                        return Result(Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888), boxes.toTypedArray(), mWidth, mHeight)
+                    }
                 }
 
-                // YOLO
+                // 2. YOLO with Pre/Post Processing (the one from ORT examples)
                 val rawOutput = if (outputNames.contains("image_out")) {
                     (output.get("image_out").get().value) as? ByteArray
                 } else {
@@ -95,6 +123,8 @@ internal class ObjectDetector(
                     null
                 }
                 
+                // If it's the pre-post processed model, coordinates are usually absolute pixels of the image
+                // If they are < 1, they might be normalized.
                 val filteredBoxOutput = boxOutput?.filter { it[4] >= CONF_THRESHOLD }?.toTypedArray() ?: emptyArray()
 
                 val outputImageBitmap = try {

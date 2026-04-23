@@ -8,6 +8,7 @@ import android.content.pm.PackageManager
 import android.graphics.*
 import android.os.Bundle
 import android.util.Log
+import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.core.*
 import androidx.camera.lifecycle.ProcessCameraProvider
@@ -29,13 +30,16 @@ class MainActivity : AppCompatActivity() {
 
     private var ortEnv: OrtEnvironment = OrtEnvironment.getEnvironment()
     private val sessions: MutableMap<String, OrtSession> = mutableMapOf()
-    private lateinit var classes: List<String>
+    
+    private val sohamClasses = listOf("Distracted", "Drinking", "Drowsy", "Eating", "PhoneUse", "SafeDriving", "Seatbelt", "Smoking")
+    private val chaitanyaClasses = listOf("Cigarette", "Drinking", "Eating", "Phone", "Seatbelt")
+    
     private var objDetector: ObjectDetector = ObjectDetector()
 
     private lateinit var cameraExecutor: ExecutorService
     private var faceLandmarker: FaceLandmarker? = null
 
-    // Monitoring State (Matching Python logic)
+    // Monitoring State
     private var earConsecFrames = 0
     private var marConsecFrames = 0
     private var headConsecFrames = 0
@@ -44,7 +48,6 @@ class MainActivity : AppCompatActivity() {
     private var lastTimestamp = System.currentTimeMillis()
     private var frameCount = 0
     
-    // Stats for HUD
     private var currentEAR = 0f
     private var currentMAR = 0f
     private var currentHeadPose = "Forward OK"
@@ -54,7 +57,6 @@ class MainActivity : AppCompatActivity() {
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        classes = readClasses()
         initModels()
         initMediaPipe()
 
@@ -136,21 +138,33 @@ class MainActivity : AppCompatActivity() {
 
             // 2. Object Detection (Dual YOLO with NMS)
             val allDetections = mutableListOf<DetectionResult>()
-            listOf("sobest", "best").forEach { name ->
-                sessions[name]?.let { session ->
-                    try {
-                        val res = objDetector.detect(bitmap, ortEnv, session)
-                        res.outputBox.forEach { box ->
-                            // Scale coordinates to bitmap pixels immediately based on model dimensions
+            
+            sessions.forEach { (name, session) ->
+                try {
+                    val res = objDetector.detect(bitmap, ortEnv, session)
+                    res.outputBox.forEach { box ->
+                        // Detect coordinate range
+                        val isNormalized = box[0] < 2f && box[2] < 2f
+                        val left: Float; val top: Float; val right: Float; val bottom: Float
+                        
+                        if (isNormalized) {
+                            left = box[0] * bitmap.width
+                            top = box[1] * bitmap.height
+                            right = box[2] * bitmap.width
+                            bottom = box[3] * bitmap.height
+                        } else {
                             val scaleX = bitmap.width.toFloat() / res.modelWidth
                             val scaleY = bitmap.height.toFloat() / res.modelHeight
-                            val scaledBox = floatArrayOf(
-                                box[0] * scaleX, box[1] * scaleY, box[2] * scaleX, box[3] * scaleY, box[4], box[5]
-                            )
-                            allDetections.add(DetectionResult(scaledBox, name))
+                            left = box[0] * scaleX; top = box[1] * scaleY
+                            right = box[2] * scaleX; bottom = box[3] * scaleY
                         }
-                    } catch (e: Exception) { Log.e(TAG, "YOLO $name failed: ${e.message}") }
-                }
+                        
+                        allDetections.add(DetectionResult(
+                            floatArrayOf(left, top, right, bottom, box[4], box[5]), 
+                            name
+                        ))
+                    }
+                } catch (e: Exception) { Log.e(TAG, "YOLO $name failed: ${e.message}") }
             }
             val finalDetections = nms(allDetections)
 
@@ -198,7 +212,6 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun iou(b1: FloatArray, b2: FloatArray): Float {
-        // [left, top, right, bottom]
         val x1 = maxOf(b1[0], b2[0]); val y1 = maxOf(b1[1], b2[1])
         val x2 = minOf(b1[2], b2[2]); val y2 = minOf(b1[3], b2[3])
         val inter = maxOf(0f, x2 - x1) * maxOf(0f, y2 - y1)
@@ -212,32 +225,29 @@ class MainActivity : AppCompatActivity() {
         
         mpResult?.faceLandmarks()?.firstOrNull()?.let { landmarks ->
             noFaceFrames = 0
-            
-            // EAR
             currentEAR = calculateEAR(landmarks)
             if (currentEAR < 0.25f) earConsecFrames++ else earConsecFrames = 0
             if (earConsecFrames >= 5) alerts.add("EYES CLOSED! WAKE UP!" to Color.RED)
 
-            // MAR
             currentMAR = calculateMAR(landmarks)
             if (currentMAR > 0.50f) marConsecFrames++ else marConsecFrames = 0
             if (marConsecFrames >= 7) alerts.add("YAWNING DETECTED!" to Color.rgb(255, 140, 0))
             
-            // Pose
             currentHeadPose = classifyHeadDirection(landmarks) ?: "Forward OK"
             if (currentHeadPose != "Forward OK") headConsecFrames++ else headConsecFrames = 0
             if (headConsecFrames >= 20) alerts.add("DISTRACTED: $currentHeadPose" to Color.RED)
         }
 
-        // YOLO Objects
-        val labels = detections.map { d -> 
-            val id = d.box[5].toInt()
-            if (d.modelName == "sobest") classes.getOrElse(id) { "" } else ""
+        var hasSeatbelt = false
+        detections.forEach { d ->
+            val list = if (d.modelName == "sobest") sohamClasses else chaitanyaClasses
+            val label = list.getOrElse(d.box[5].toInt()) { "" }
+            
+            if (label == "Seatbelt") hasSeatbelt = true
+            if (label == "Phone" || label == "PhoneUse") alerts.add("PUT DOWN PHONE!" to Color.RED)
+            if (label == "Cigarette" || label == "Smoking") alerts.add("NO SMOKING!" to Color.rgb(255, 140, 0))
         }
-        if (labels.contains("PhoneUse") || labels.contains("Phone")) alerts.add("PUT DOWN PHONE!" to Color.RED)
-        if (labels.contains("Smoking") || labels.contains("Cigarette")) alerts.add("NO SMOKING!" to Color.rgb(255, 140, 0))
         
-        val hasSeatbelt = labels.contains("Seatbelt")
         if (faceFound && !hasSeatbelt) alerts.add("FASTEN SEATBELT!" to Color.RED)
 
         if (!faceFound) {
@@ -283,30 +293,29 @@ class MainActivity : AppCompatActivity() {
         val scaleX = canvas.width.toFloat() / bitmap.width
         val scaleY = canvas.height.toFloat() / bitmap.height
 
-        // 1. Draw Landmarks (Replicating Python landmark dots)
+        // 1. Landmarks
         mpResult?.faceLandmarks()?.firstOrNull()?.let { landmarks ->
             val eyesIndices = listOf(362, 385, 387, 263, 373, 380, 33, 160, 158, 133, 153, 144)
             val mouthIndices = listOf(78, 308, 82, 87, 13, 14, 312, 317)
-            
-            dotPaint.color = Color.rgb(0, 255, 180) // Eyes (Greenish)
+            dotPaint.color = Color.rgb(0, 255, 180)
             eyesIndices.forEach { canvas.drawCircle(landmarks[it].x() * canvas.width, landmarks[it].y() * canvas.height, 4f, dotPaint) }
-            
-            dotPaint.color = Color.rgb(180, 220, 0) // Mouth (Yellowish)
+            dotPaint.color = Color.rgb(180, 220, 0)
             mouthIndices.forEach { canvas.drawCircle(landmarks[it].x() * canvas.width, landmarks[it].y() * canvas.height, 4f, dotPaint) }
         }
 
-        // 2. Draw YOLO Boxes
+        // 2. YOLO Boxes
         detections.forEach { d ->
             paint.color = if (d.modelName == "sobest") Color.RED else Color.GREEN
             val left = d.box[0] * scaleX; val top = d.box[1] * scaleY
             val right = d.box[2] * scaleX; val bottom = d.box[3] * scaleY
             canvas.drawRect(left, top, right, bottom, paint)
             
-            val label = if (d.modelName == "sobest") classes.getOrElse(d.box[5].toInt()) { "Obj" } else "Best"
+            val list = if (d.modelName == "sobest") sohamClasses else chaitanyaClasses
+            val label = list.getOrElse(d.box[5].toInt()) { "Obj" }
             canvas.drawText("%s %.2f".format(label, d.box[4]), left, top - 10, textPaint)
         }
 
-        // 3. Draw HUD (Top Left)
+        // 3. HUD (Top Left)
         canvas.drawRect(0f, 0f, 450f, 220f, Paint().apply { color = Color.BLACK; alpha = 160 })
         val statusText = if (faceFound) "Face: MP OK" else "Face: NOT FOUND"
         val statusColor = if (faceFound) Color.GREEN else Color.RED
@@ -322,18 +331,21 @@ class MainActivity : AppCompatActivity() {
         textPaint.color = Color.YELLOW
         canvas.drawText("YOLO Objs: ${detections.size}", 20f, 180f, textPaint)
 
-        // 4. Top Right Pose & Seatbelt
+        // 4. Pose & Seatbelt (Top Right)
         val poseColor = if (currentHeadPose == "Forward OK") Color.GREEN else Color.RED
-        val poseTextWidth = textPaint.measureText(currentHeadPose)
-        canvas.drawText(currentHeadPose, canvas.width - poseTextWidth - 20f, 45f, textPaint.apply { color = poseColor })
+        val poseTW = textPaint.measureText(currentHeadPose)
+        canvas.drawText(currentHeadPose, canvas.width - poseTW - 20f, 45f, textPaint.apply { color = poseColor })
         
-        val hasSeatbelt = detections.any { d -> d.modelName == "sobest" && classes.getOrElse(d.box[5].toInt()){""} == "Seatbelt" }
-        val sbText = if (hasSeatbelt) "SEATBELT ON" else "NO SEATBELT"
-        val sbColor = if (hasSeatbelt) Color.GREEN else Color.RED
-        val sbTextWidth = textPaint.measureText(sbText)
-        canvas.drawText(sbText, canvas.width - sbTextWidth - 20f, 100f, textPaint.apply { color = sbColor })
+        val hasSB = detections.any { d -> 
+            val l = if (d.modelName == "sobest") sohamClasses else chaitanyaClasses
+            l.getOrElse(d.box[5].toInt()){""} == "Seatbelt"
+        }
+        val sbText = if (hasSB) "SEATBELT ON" else "NO SEATBELT"
+        val sbColor = if (hasSB) Color.GREEN else Color.RED
+        val sbTW = textPaint.measureText(sbText)
+        canvas.drawText(sbText, canvas.width - sbTW - 20f, 100f, textPaint.apply { color = sbColor })
 
-        // 5. Draw Alerts (Bottom Centered)
+        // 5. Alerts (Bottom Centered)
         var ay = canvas.height - 80f
         alerts.reversed().forEach { (msg, col) ->
             textPaint.color = col; textPaint.textSize = 50f
@@ -346,7 +358,6 @@ class MainActivity : AppCompatActivity() {
         binding.overlay.setImageBitmap(overlay)
     }
 
-    private fun readClasses() = resources.openRawResource(R.raw.classes).bufferedReader().readLines()
     private fun allPermissionsGranted() = REQUIRED_PERMISSIONS.all { ContextCompat.checkSelfPermission(baseContext, it) == PackageManager.PERMISSION_GRANTED }
 
     override fun onDestroy() {
@@ -355,6 +366,13 @@ class MainActivity : AppCompatActivity() {
         ortEnv.close()
         sessions.values.forEach { it.close() }
         faceLandmarker?.close()
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == REQUEST_CODE_PERMISSIONS) {
+            if (allPermissionsGranted()) startCamera() else finish()
+        }
     }
 
     @SuppressLint("UnsafeOptInUsageError")
